@@ -1,11 +1,99 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Moodscope · Emotion Analyzer</title>
+  <meta name="description" content="BiGRU powered emotion detection from text." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
 </head>
-<body>
-    <h1>App is working</h1>
+<body data-emotion="neutral">
+  <!-- animated backdrop -->
+  <div class="bg" aria-hidden="true">
+    <span class="blob b1"></span>
+    <span class="blob b2"></span>
+    <span class="blob b3"></span>
+    <div class="grid"></div>
+  </div>
+  <div class="cursor-glow" id="cursorGlow" aria-hidden="true"></div>
+  <div class="fx" id="fx" aria-hidden="true"></div>
+
+  <header class="top">
+    <div class="brand">
+      <span class="logo">◐</span>
+      <span>Moodscope</span>
+    </div>
+    <div class="status" id="status" title="Server health">
+      <span class="dot"></span><span id="statusText">Connecting…</span>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="hero">
+      <p class="eyebrow">BiGRU · 6 emotions · real time</p>
+      <h1>What is your <span class="grad" id="heroWord">sentence</span> really feeling?</h1>
+      <p class="sub">Type anything. A bidirectional GRU reads it word by word and tells you the emotion hiding inside.</p>
+    </section>
+
+    <section class="card tilt" id="card">
+      <div class="input-area">
+        <textarea id="text" maxlength="2000" rows="4" placeholder="I can't believe how wonderful today turned out to be…" spellcheck="false"></textarea>
+        <div class="input-foot">
+          <div class="chips" id="chips">
+            <button class="chip" data-t="I feel so happy and excited about tomorrow">😄 Joyful</button>
+            <button class="chip" data-t="I miss her so much, everything feels empty without her">😢 Sad</button>
+            <button class="chip" data-t="I am furious, how dare they treat me like this">😠 Angry</button>
+            <button class="chip" data-t="I am terrified, something is moving in the dark">😨 Scared</button>
+            <button class="chip" data-t="I adore you more than words can say">❤️ Loving</button>
+            <button class="chip" data-t="Wow, I never expected this, what a shock!">😲 Surprised</button>
+          </div>
+          <div class="actions">
+            <span class="count"><span id="count">0</span>/2000</span>
+            <button class="btn" id="analyze" disabled>
+              <span class="btn-label">Analyze</span>
+              <span class="spinner" aria-hidden="true"></span>
+              <kbd>Ctrl ⏎</kbd>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="error" id="error" role="alert" hidden></div>
+
+      <div class="result" id="result" hidden>
+        <div class="verdict">
+          <div class="emoji-wrap">
+            <div class="ring-box">
+              <svg viewBox="0 0 120 120" class="ring">
+                <circle class="ring-bg" cx="60" cy="60" r="54" />
+                <circle class="ring-fg" id="ringFg" cx="60" cy="60" r="54" />
+              </svg>
+              <div class="big-emoji" id="bigEmoji">🙂</div>
+            </div>
+          </div>
+          <div class="verdict-text">
+            <p class="label">Detected emotion</p>
+            <h2 id="emoName">—</h2>
+            <p class="conf"><span id="confNum">0</span><small>% confidence</small></p>
+            <p class="quote" id="quote"></p>
+          </div>
+        </div>
+
+        <div class="bars" id="bars"></div>
+      </div>
+    </section>
+
+    <section class="history" id="historyBox" hidden>
+      <h3>Recent</h3>
+      <ul id="history"></ul>
+    </section>
+
+    <footer>Built with FastAPI + TensorFlow · Press <kbd>Ctrl</kbd> + <kbd>Enter</kbd> to analyze</footer>
+  </main>
+
+  <script src="/static/script.js"></script>
 </body>
-</html> 
+</html>
