@@ -146,14 +146,14 @@ C. Predict Emotion Endpoint ('/predict')
 def server_ui():
     return FileResponse('static/index.html')
 
-# B. health Check Endpoint ('/predict')
+# B. health Check Endpoint ('/health')
 @app.get('/health', response_model=HealthResponse)
 def health_check():
     return HealthResponse(status="Server is running", model_loaded=bool(dl_model))
 
 #C. Predict Emotion Endpoint ('/predict')
 @app.post('/predict', response_model = PredictionResponse)
-def prdict_emotion(text_input : TextInput):
+def predict_emotion(text_input : TextInput):
     """
     1. Cleans the input sentences.
     2. Convert teh words into numeric using tokenizer.

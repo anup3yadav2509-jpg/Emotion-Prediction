@@ -1,99 +1,83 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Moodscope · Emotion Analyzer</title>
-  <meta name="description" content="BiGRU powered emotion detection from text." />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/style.css" />
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Moodlens</title>
+  <meta name="description" content="Type a sentence and see which of six emotions it carries.">
+  <meta name="theme-color" content="#E9ECF3">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🙂%3C/text%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,200..800&display=swap">
+  <link rel="stylesheet" href="/static/style.css">
 </head>
-<body data-emotion="neutral">
-  <!-- animated backdrop -->
-  <div class="bg" aria-hidden="true">
-    <span class="blob b1"></span>
-    <span class="blob b2"></span>
-    <span class="blob b3"></span>
-    <div class="grid"></div>
-  </div>
-  <div class="cursor-glow" id="cursorGlow" aria-hidden="true"></div>
-  <div class="fx" id="fx" aria-hidden="true"></div>
+<body>
+  <div class="app">
+    <header class="top">
+      <a class="brand" href="/"><span class="mark" aria-hidden="true"></span>Moodlens</a>
+      <div class="status" id="health" data-state="pending" role="status">
+        <span class="dot" aria-hidden="true"></span>
+        <span id="health-label">Waking the model</span>
+      </div>
+    </header>
 
-  <header class="top">
-    <div class="brand">
-      <span class="logo">◐</span>
-      <span>Moodscope</span>
-    </div>
-    <div class="status" id="status" title="Server health">
-      <span class="dot"></span><span id="statusText">Connecting…</span>
-    </div>
-  </header>
+    <main class="stage">
+      <section class="compose" aria-labelledby="title">
+        <h1 id="title">How does this sentence feel?</h1>
+        <p class="lede">Write a line from a message, a review or a diary. A BiGRU model scores it against six emotions.</p>
 
-  <main class="wrap">
-    <section class="hero">
-      <p class="eyebrow">BiGRU · 6 emotions · real time</p>
-      <h1>What is your <span class="grad" id="heroWord">sentence</span> really feeling?</h1>
-      <p class="sub">Type anything. A bidirectional GRU reads it word by word and tells you the emotion hiding inside.</p>
-    </section>
-
-    <section class="card tilt" id="card">
-      <div class="input-area">
-        <textarea id="text" maxlength="2000" rows="4" placeholder="I can't believe how wonderful today turned out to be…" spellcheck="false"></textarea>
-        <div class="input-foot">
-          <div class="chips" id="chips">
-            <button class="chip" data-t="I feel so happy and excited about tomorrow">😄 Joyful</button>
-            <button class="chip" data-t="I miss her so much, everything feels empty without her">😢 Sad</button>
-            <button class="chip" data-t="I am furious, how dare they treat me like this">😠 Angry</button>
-            <button class="chip" data-t="I am terrified, something is moving in the dark">😨 Scared</button>
-            <button class="chip" data-t="I adore you more than words can say">❤️ Loving</button>
-            <button class="chip" data-t="Wow, I never expected this, what a shock!">😲 Surprised</button>
-          </div>
-          <div class="actions">
-            <span class="count"><span id="count">0</span>/2000</span>
-            <button class="btn" id="analyze" disabled>
-              <span class="btn-label">Analyze</span>
-              <span class="spinner" aria-hidden="true"></span>
-              <kbd>Ctrl ⏎</kbd>
+        <form id="form" novalidate>
+          <label class="sr-only" for="text">Sentence to analyze</label>
+          <textarea id="text" maxlength="2000" rows="4" placeholder="Type or paste a sentence"></textarea>
+          <div class="compose-foot">
+            <span class="meta"><span id="count">0 / 2000</span><span class="hint" id="hint"></span></span>
+            <button class="btn" id="analyze" type="submit" disabled>
+              <span class="spin" aria-hidden="true"></span>
+              <span id="btn-label">Analyze</span>
             </button>
           </div>
-        </div>
-      </div>
+        </form>
 
-      <div class="error" id="error" role="alert" hidden></div>
+        <ul class="chips" id="chips" aria-label="Example sentences"></ul>
+      </section>
 
-      <div class="result" id="result" hidden>
-        <div class="verdict">
-          <div class="emoji-wrap">
-            <div class="ring-box">
-              <svg viewBox="0 0 120 120" class="ring">
-                <circle class="ring-bg" cx="60" cy="60" r="54" />
-                <circle class="ring-fg" id="ringFg" cx="60" cy="60" r="54" />
-              </svg>
-              <div class="big-emoji" id="bigEmoji">🙂</div>
-            </div>
-          </div>
-          <div class="verdict-text">
-            <p class="label">Detected emotion</p>
-            <h2 id="emoName">—</h2>
-            <p class="conf"><span id="confNum">0</span><small>% confidence</small></p>
-            <p class="quote" id="quote"></p>
-          </div>
+      <section class="panel" id="panel" aria-live="polite">
+        <div id="p-empty" class="state empty">
+          <p class="state-title">Your result will show up here</p>
+          <p class="state-sub">These are the six emotions the model recognises.</p>
+          <ul class="dial" id="dial"></ul>
         </div>
 
-        <div class="bars" id="bars"></div>
+        <div id="p-loading" class="state loading" hidden>
+          <div class="dots" aria-hidden="true"><span></span><span></span><span></span></div>
+          <p class="state-title">Reading your sentence</p>
+          <p class="state-sub" id="slow" hidden>The first request after a quiet spell can take up to a minute while the server wakes up.</p>
+        </div>
+
+        <div id="p-result" class="state result" hidden></div>
+
+        <div id="p-error" class="state error" hidden>
+          <p class="state-title">Couldn't get a result</p>
+          <p class="state-sub" id="err-msg"></p>
+          <button type="button" class="btn btn-ghost" id="retry">Try again</button>
+        </div>
+      </section>
+    </main>
+
+    <section class="history" id="history" hidden aria-labelledby="history-title">
+      <div class="history-head">
+        <h3 id="history-title">Recent</h3>
+        <button type="button" class="link" id="clear-history">Clear</button>
       </div>
+      <ul class="history-list" id="history-list"></ul>
     </section>
 
-    <section class="history" id="historyBox" hidden>
-      <h3>Recent</h3>
-      <ul id="history"></ul>
-    </section>
+    <footer class="foot">
+      The model reads words only, so sarcasm and missing context can fool it.
+    </footer>
+  </div>
 
-    <footer>Built with FastAPI + TensorFlow · Press <kbd>Ctrl</kbd> + <kbd>Enter</kbd> to analyze</footer>
-  </main>
-
-  <script src="/static/script.js"></script>
+  <script src="/static/script.js" defer></script>
 </body>
 </html>

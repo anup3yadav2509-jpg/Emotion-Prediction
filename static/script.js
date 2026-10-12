@@ -1,214 +1,357 @@
 (() => {
-  const EMO = {
-    sadness:  { emoji: "😢", color: "#5b8def", line: "A heavy, quiet kind of feeling." },
-    joy:      { emoji: "😄", color: "#ffc83d", line: "Bright, warm and full of energy." },
-    love:     { emoji: "❤️", color: "#ff5c8a", line: "Affection and tenderness shine through." },
-    anger:    { emoji: "😠", color: "#ff4d4d", line: "There is real heat behind these words." },
-    fear:     { emoji: "😨", color: "#a06bff", line: "An unease that is hard to shake." },
-    surprise: { emoji: "😲", color: "#2ee6c5", line: "Something unexpected just landed." },
+  'use strict';
+
+  /* ---------- Data ---------- */
+  const NEUTRAL = { bg: '#E9ECF3', ink: '#1B1F2E' };
+
+  const EMOTIONS = {
+    sadness:  { emoji: '😢', bg: '#3F66C9', ink: '#F2F5FF', sample: 'I miss how things used to be' },
+    joy:      { emoji: '😄', bg: '#FFC83D', ink: '#2B1D00', sample: "I can't stop smiling, today was perfect" },
+    love:     { emoji: '❤️', bg: '#FF8DA6', ink: '#3B0A1C', sample: "I'd do anything for you" },
+    anger:    { emoji: '😠', bg: '#C93220', ink: '#FFF1EC', sample: 'How dare you go behind my back' },
+    fear:     { emoji: '😨', bg: '#5B3FB5', ink: '#F3EEFF', sample: 'I heard footsteps in the empty house' },
+    surprise: { emoji: '😲', bg: '#2FC7C0', ink: '#05302E', sample: 'I never expected that to happen' },
   };
-  const CIRC = 2 * Math.PI * 54;
+  const FALLBACK = { emoji: '🤔', ...NEUTRAL };
 
+  const HISTORY_KEY = 'moodlens.history';
+  const HISTORY_MAX = 6;
+
+  /* ---------- Helpers ---------- */
   const $ = (id) => document.getElementById(id);
-  const textEl = $("text"), btn = $("analyze"), countEl = $("count");
-  const resultEl = $("result"), errEl = $("error"), barsEl = $("bars");
-  const histBox = $("historyBox"), histEl = $("history");
-  const history = [];
+  const root = document.documentElement;
+  const themeMeta = document.querySelector('meta[name="theme-color"]');
+  const prefersReduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-  /* ---------- health ping ---------- */
-  async function ping() {
-    const s = $("status"), t = $("statusText");
-    try {
-      const r = await fetch("/health");
-      const d = await r.json();
-      s.className = "status " + (d.model_loaded ? "ok" : "down");
-      t.textContent = d.model_loaded ? "Model online" : "Model loading…";
-    } catch {
-      s.className = "status down";
-      t.textContent = "Server offline";
+  const h = (tag, props = {}, ...kids) => {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(props)) {
+      if (k === 'class') el.className = v;
+      else if (k === 'text') el.textContent = v;
+      else el.setAttribute(k, v);
     }
-  }
-  ping();
-  setInterval(ping, 20000);
+    el.append(...kids);
+    return el;
+  };
 
-  /* ---------- input ---------- */
-  function sync() {
-    const n = textEl.value.length;
-    countEl.textContent = n;
-    btn.disabled = textEl.value.trim().length === 0;
-  }
-  textEl.addEventListener("input", sync);
-  textEl.addEventListener("keydown", (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && !btn.disabled) analyze();
-  });
-  $("chips").addEventListener("click", (e) => {
-    const c = e.target.closest(".chip");
-    if (!c) return;
-    textEl.value = c.dataset.t;
-    sync();
-    analyze();
-  });
-  btn.addEventListener("click", analyze);
+  const centerOf = (el) => {
+    const r = el.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  };
 
-  /* ---------- helpers ---------- */
-  function countUp(el, to, ms = 1100) {
-    const start = performance.now();
+  const els = {
+    form: $('form'), text: $('text'), count: $('count'), hint: $('hint'),
+    btn: $('analyze'), btnLabel: $('btn-label'), chips: $('chips'), dial: $('dial'),
+    empty: $('p-empty'), loading: $('p-loading'), result: $('p-result'), error: $('p-error'),
+    slow: $('slow'), errMsg: $('err-msg'), retry: $('retry'), panel: $('panel'),
+    health: $('health'), healthLabel: $('health-label'),
+    history: $('history'), historyList: $('history-list'), clearHistory: $('clear-history'),
+  };
+
+  const panels = { empty: els.empty, loading: els.loading, result: els.result, error: els.error };
+  const showPanel = (name) => {
+    for (const [key, el] of Object.entries(panels)) el.hidden = key !== name;
+  };
+
+  /* ---------- Colour wipe ---------- */
+  let target = NEUTRAL;
+  let active = null;
+
+  const applyTheme = (t) => {
+    root.style.setProperty('--bg', t.bg);
+    root.style.setProperty('--ink', t.ink);
+    if (themeMeta) themeMeta.content = t.bg;
+  };
+
+  const settle = () => {
+    if (!active) return;
+    const a = active;
+    active = null;
+    clearTimeout(a.timer);
+    a.anim.cancel();
+    a.el.remove();
+    applyTheme(a.theme);
+  };
+
+  const flood = (theme, x, y) => {
+    settle();
+    if (theme.bg === target.bg) return;
+    target = theme;
+
+    if (prefersReduced()) { applyTheme(theme); return; }
+
+    const el = h('div', { class: 'flood', 'aria-hidden': 'true' });
+    el.style.background = theme.bg;
+    document.body.prepend(el);
+
+    const r = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y));
+    const anim = el.animate(
+      [
+        { clipPath: `circle(0px at ${x}px ${y}px)` },
+        { clipPath: `circle(${r}px at ${x}px ${y}px)` },
+      ],
+      { duration: 950, easing: 'cubic-bezier(.65, 0, .2, 1)', fill: 'forwards' }
+    );
+    const timer = setTimeout(() => root.style.setProperty('--ink', theme.ink), 380);
+    active = { el, anim, timer, theme };
+
+    anim.finished
+      .then(() => {
+        if (active && active.el === el) {
+          const t = active.theme;
+          active = null;
+          applyTheme(t);
+          el.remove();
+        }
+      })
+      .catch(() => {});
+  };
+
+  /* ---------- Rendering a result ---------- */
+  const countUp = (el, to, delay = 450, duration = 1000) => {
+    if (prefersReduced()) { el.textContent = to.toFixed(1); return; }
+    const start = performance.now() + delay;
     const tick = (now) => {
-      const p = Math.min((now - start) / ms, 1);
-      const eased = 1 - Math.pow(1 - p, 4);
-      el.textContent = (to * eased).toFixed(1);
-      if (p < 1) requestAnimationFrame(tick);
+      const t = Math.min(Math.max((now - start) / duration, 0), 1);
+      el.textContent = (to * (1 - Math.pow(1 - t, 3))).toFixed(1);
+      if (t < 1) requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
-  }
+  };
 
-  function burst(emoji, originEl) {
-    if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const fx = $("fx");
-    const r = originEl.getBoundingClientRect();
-    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-    for (let i = 0; i < 18; i++) {
-      const s = document.createElement("span");
-      s.textContent = emoji;
-      s.style.left = cx + "px";
-      s.style.top = cy + "px";
-      fx.appendChild(s);
-      const ang = Math.random() * Math.PI * 2;
-      const dist = 120 + Math.random() * 260;
-      const dx = Math.cos(ang) * dist, dy = Math.sin(ang) * dist - 80;
-      const rot = (Math.random() - 0.5) * 540;
-      const sc = 0.5 + Math.random() * 1.1;
-      s.animate(
-        [
-          { transform: "translate(-50%,-50%) scale(0)", opacity: 1 },
-          { transform: `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px)) rotate(${rot}deg) scale(${sc})`, opacity: 1, offset: 0.6 },
-          { transform: `translate(calc(-50% + ${dx}px), calc(-50% + ${dy + 140}px)) rotate(${rot * 1.4}deg) scale(${sc})`, opacity: 0 },
-        ],
-        { duration: 1400 + Math.random() * 700, easing: "cubic-bezier(.2,.8,.3,1)" }
-      ).onfinish = () => s.remove();
+  const buildResult = (data) => {
+    const key = data.predicted_emotion;
+    const meta = EMOTIONS[key] || FALLBACK;
+    const pct = data.confidence * 100;
+    const entries = Object.entries(data.all_probabilities);
+    const sorted = [...entries].sort((a, b) => b[1] - a[1]);
+
+    const name = h('h2', { class: 'emotion-name', 'aria-label': key });
+    [...key].forEach((ch, i) => {
+      const s = h('span', { class: 'letter', 'aria-hidden': 'true', text: ch });
+      s.style.setProperty('--i', i);
+      name.append(s);
+    });
+
+    const pctEl = h('span', { text: '0.0' });
+    const confidence = h('p', { class: 'confidence' }, h('strong', {}, pctEl, '%'), ' confident');
+
+    const bars = h('ul', { class: 'bars' });
+    entries.forEach(([label, p], i) => {
+      const li = h('li', { class: 'bar' + (label === key ? ' top' : '') });
+      li.style.setProperty('--i', i);
+      const fill = h('span', { class: 'fill' });
+      fill.style.setProperty('--w', Math.max(p, 0));
+      li.append(
+        h('span', { 'aria-hidden': 'true', text: (EMOTIONS[label] || FALLBACK).emoji }),
+        h('span', { text: label }),
+        h('span', { class: 'track' }, fill),
+        h('span', { class: 'val', text: (p * 100).toFixed(1) + '%' })
+      );
+      bars.append(li);
+    });
+
+    const nodes = [
+      h('div', { class: 'emoji-big', 'aria-hidden': 'true', text: meta.emoji }),
+      name,
+      confidence,
+    ];
+    if (pct < 50 && sorted[1]) {
+      nodes.push(h('p', {
+        class: 'hedge',
+        text: `Mixed signals. Closest alternative: ${sorted[1][0]} (${(sorted[1][1] * 100).toFixed(1)}%).`,
+      }));
     }
-  }
+    nodes.push(h('p', { class: 'echo', text: `\u201C${data.text}\u201D` }), bars);
 
-  function swapHero(word) {
-    const h = $("heroWord");
-    h.classList.remove("swap");
-    void h.offsetWidth;
-    h.textContent = word;
-    h.classList.add("swap");
-  }
+    els.result.replaceChildren(...nodes);
+    countUp(pctEl, pct);
+  };
 
-  function showError(msg) {
-    errEl.textContent = msg;
-    errEl.hidden = false;
-    errEl.style.animation = "none"; void errEl.offsetWidth; errEl.style.animation = "";
-  }
+  const show = (data, origin) => {
+    const meta = EMOTIONS[data.predicted_emotion] || FALLBACK;
+    buildResult(data);
+    showPanel('result');
+    flood({ bg: meta.bg, ink: meta.ink }, origin.x, origin.y);
+  };
 
-  /* ---------- analyze ---------- */
-  async function analyze() {
-    const text = textEl.value.trim();
-    if (!text || btn.classList.contains("loading")) return;
-    errEl.hidden = true;
-    btn.classList.add("loading");
-    btn.disabled = true;
+  const showError = (message) => {
+    els.errMsg.textContent = message;
+    showPanel('error');
+  };
+
+  /* ---------- API ---------- */
+  let busy = false;
+  let lastText = '';
+
+  const setBusy = (on) => {
+    busy = on;
+    els.btn.dataset.loading = String(on);
+    els.btnLabel.textContent = on ? 'Reading' : 'Analyze';
+    els.btn.disabled = on || !els.text.value.trim();
+    els.panel.setAttribute('aria-busy', String(on));
+  };
+
+  const messageFor = (err) => {
+    if (err.name === 'AbortError') return 'The server took too long to answer. Try again in a moment.';
+    if (err.status === 503) return 'The model is still loading. Wait a few seconds and try again.';
+    if (err.status === 422) return 'Enter between 1 and 2,000 characters.';
+    if (err instanceof TypeError) return "Can't reach the server. Check that it is running, then try again.";
+    return 'The server hit an error while reading that sentence. Try again.';
+  };
+
+  const analyze = async (raw, origin) => {
+    const text = raw.trim();
+    if (!text || busy) return;
+
+    lastText = text;
+    if (!/[a-z0-9]/i.test(text)) {
+      showError('Add some words. Punctuation and symbols on their own can\u2019t be scored.');
+      return;
+    }
+
+    setBusy(true);
+    els.slow.hidden = true;
+    showPanel('loading');
+    const slowTimer = setTimeout(() => { els.slow.hidden = false; }, 5000);
+    const ctrl = new AbortController();
+    const abortTimer = setTimeout(() => ctrl.abort(), 90000);
 
     try {
-      const res = await fetch("/predict", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+      const res = await fetch('/predict', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
+        signal: ctrl.signal,
       });
       if (!res.ok) {
-        let detail = "Something went wrong.";
-        try { const j = await res.json(); if (typeof j.detail === "string") detail = j.detail; } catch {}
-        throw new Error(detail);
+        const err = new Error('Request failed');
+        err.status = res.status;
+        throw err;
       }
-      render(await res.json());
-    } catch (e) {
-      showError(e.message === "Failed to fetch" ? "Cannot reach the server. Is it running?" : e.message);
+      const data = await res.json();
+      remember(data);
+      show(data, origin);
+    } catch (err) {
+      showError(messageFor(err));
     } finally {
-      btn.classList.remove("loading");
-      sync();
+      clearTimeout(slowTimer);
+      clearTimeout(abortTimer);
+      setBusy(false);
     }
-  }
+  };
 
-  function render(d) {
-    const key = d.predicted_emotion;
-    const meta = EMO[key] || { emoji: "🙂", color: "#8b7bff", line: "" };
-    document.body.dataset.emotion = key;
-    swapHero(key);
+  /* ---------- History ---------- */
+  let history = [];
 
-    resultEl.hidden = false;
-    resultEl.style.animation = "none"; void resultEl.offsetWidth; resultEl.style.animation = "";
+  const saveHistory = () => {
+    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(history)); } catch { /* storage unavailable */ }
+  };
 
-    const big = $("bigEmoji");
-    big.textContent = meta.emoji;
-    big.classList.remove("pop"); void big.offsetWidth; big.classList.add("pop");
-    $("emoName").textContent = key;
-    $("quote").textContent = meta.line;
+  const loadHistory = () => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+      if (Array.isArray(raw)) history = raw.slice(0, HISTORY_MAX);
+    } catch { history = []; }
+  };
 
-    const pct = d.confidence * 100;
-    const ring = $("ringFg");
-    ring.style.strokeDashoffset = CIRC;
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      ring.style.strokeDashoffset = CIRC * (1 - d.confidence);
-    }));
-    countUp($("confNum"), pct);
+  const renderHistory = () => {
+    els.history.hidden = history.length === 0;
+    els.historyList.replaceChildren(
+      ...history.map((item) => {
+        const btn = h(
+          'button',
+          { type: 'button', class: 'chip', title: item.text },
+          h('span', { 'aria-hidden': 'true', text: (EMOTIONS[item.predicted_emotion] || FALLBACK).emoji }),
+          h('span', { text: item.text })
+        );
+        btn.addEventListener('click', () => {
+          els.text.value = item.text;
+          updateInput();
+          show(item, centerOf(btn));
+        });
+        return h('li', {}, btn);
+      })
+    );
+  };
 
-    // bars sorted high -> low
-    barsEl.innerHTML = "";
-    Object.entries(d.all_probabilities)
-      .sort((a, b) => b[1] - a[1])
-      .forEach(([name, p], i) => {
-        const m = EMO[name] || { emoji: "•", color: "#888" };
-        const row = document.createElement("div");
-        row.className = "bar" + (name === key ? " top" : "");
-        row.style.animationDelay = i * 80 + "ms";
-        row.innerHTML = `
-          <span class="name"><span>${m.emoji}</span>${name}</span>
-          <div class="track"><div class="fill" style="--c:${m.color}"></div></div>
-          <span class="pct">${(p * 100).toFixed(1)}%</span>`;
-        barsEl.appendChild(row);
-        setTimeout(() => { row.querySelector(".fill").style.width = Math.max(p * 100, 0.8) + "%"; }, 150 + i * 80);
-      });
+  const remember = (data) => {
+    history = [data, ...history.filter((x) => x.text !== data.text)].slice(0, HISTORY_MAX);
+    saveHistory();
+    renderHistory();
+  };
 
-    burst(meta.emoji, big);
-    if (window.innerWidth < 700) resultEl.scrollIntoView({ behavior: "smooth", block: "start" });
-    pushHistory(d.text, key, pct, meta.emoji);
-  }
+  /* ---------- Input ---------- */
+  const updateInput = () => {
+    const len = els.text.value.length;
+    els.count.textContent = `${len} / 2000`;
+    els.btn.disabled = busy || !els.text.value.trim();
+  };
 
-  function pushHistory(text, key, pct, emoji) {
-    history.unshift({ text, key, pct, emoji });
-    if (history.length > 5) history.pop();
-    histBox.hidden = false;
-    histEl.innerHTML = "";
-    history.forEach((h, i) => {
-      const li = document.createElement("li");
-      li.style.animationDelay = i * 60 + "ms";
-      li.innerHTML = `<span>${h.emoji}</span><span class="t"></span><span class="p">${h.key} · ${h.pct.toFixed(0)}%</span>`;
-      li.querySelector(".t").textContent = h.text;
-      li.addEventListener("click", () => { textEl.value = h.text; sync(); textEl.focus(); window.scrollTo({ top: 0, behavior: "smooth" }); });
-      histEl.appendChild(li);
+  els.text.addEventListener('input', updateInput);
+
+  els.text.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      analyze(els.text.value, centerOf(els.btn));
+    }
+  });
+
+  els.form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    analyze(els.text.value, centerOf(els.btn));
+  });
+
+  els.retry.addEventListener('click', () => analyze(lastText, centerOf(els.retry)));
+
+  els.clearHistory.addEventListener('click', () => {
+    history = [];
+    saveHistory();
+    renderHistory();
+  });
+
+  /* ---------- Static pieces built from the data ---------- */
+  Object.entries(EMOTIONS).forEach(([label, meta], i) => {
+    const li = h('li', {}, h('span', { class: 'e', 'aria-hidden': 'true', text: meta.emoji }), h('span', { text: label }));
+    li.firstChild.style.setProperty('--i', i);
+    els.dial.append(li);
+
+    const chip = h('button', { type: 'button', class: 'chip', text: meta.sample });
+    chip.addEventListener('click', () => {
+      els.text.value = meta.sample;
+      updateInput();
+      analyze(meta.sample, centerOf(chip));
     });
-  }
+    els.chips.append(h('li', {}, chip));
+  });
 
-  /* ---------- cursor glow + card tilt ---------- */
-  const glow = $("cursorGlow"), card = $("card");
-  const fine = matchMedia("(pointer: fine)").matches;
-  if (fine) {
-    window.addEventListener("pointermove", (e) => {
-      glow.style.left = e.clientX + "px";
-      glow.style.top = e.clientY + "px";
-    });
-    card.addEventListener("pointermove", (e) => {
-      const r = card.getBoundingClientRect();
-      const x = (e.clientX - r.left) / r.width - 0.5;
-      const y = (e.clientY - r.top) / r.height - 0.5;
-      card.style.transform = `perspective(1100px) rotateX(${(-y * 3.5).toFixed(2)}deg) rotateY(${(x * 3.5).toFixed(2)}deg)`;
-    });
-    card.addEventListener("pointerleave", () => { card.style.transform = ""; });
-  } else {
-    glow.style.display = "none";
-  }
+  els.hint.textContent = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
+    ? '\u2318 Enter to analyze'
+    : 'Ctrl Enter to analyze';
 
-  sync();
+  /* ---------- Server status ---------- */
+  const setHealth = (state, label) => {
+    els.health.dataset.state = state;
+    els.healthLabel.textContent = label;
+  };
+
+  const pollHealth = async (attempt = 0) => {
+    try {
+      const res = await fetch('/health', { cache: 'no-store' });
+      if (res.ok) {
+        const info = await res.json();
+        if (info.model_loaded) { setHealth('ready', 'Model ready'); return; }
+      }
+    } catch { /* server not reachable yet */ }
+
+    if (attempt >= 40) { setHealth('down', 'Server not responding'); return; }
+    setHealth('pending', 'Waking the model');
+    setTimeout(() => pollHealth(attempt + 1), 3000);
+  };
+
+  /* ---------- Start ---------- */
+  loadHistory();
+  renderHistory();
+  updateInput();
+  pollHealth();
 })();
