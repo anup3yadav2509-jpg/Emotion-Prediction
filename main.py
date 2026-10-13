@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from tensorflow.keras.models import load_model
+from pathlib import Path
 import numpy as np
 import pickle
 import re
@@ -22,11 +23,12 @@ D. Emotion Labels
 E. Emotion emojis
 """
 
-# A. Model Path(BiGRU)
-model_path = (r"D:\Sentiment Analysis\Artifacts\BiGRU_Model.keras")
+BASE_DIR = Path(__file__).resolve().parent
 
-# B. Tokenizer Path
-tokenizer_path  = (r"D:\Sentiment Analysis\Artifacts\tokenizer.pkl")
+model_path = str(BASE_DIR/"Artifacts"/"BiGRU_Model.keras")
+tokenizer_path = str(BASE_DIR/"Artifacts"/"tokenizer.pkl")
+
+
 
 # C. Max Sequence Length
 max_sequence_length = 50
@@ -131,7 +133,7 @@ app.add_middleware(
     allow_headers = ["*"],
 )
 
-app.mount('/static', StaticFiles(directory = "static"), name = "static")
+app.mount('/static', StaticFiles(directory = BASE_DIR/"static"), name = "static")
 
 
 """
@@ -144,7 +146,7 @@ C. Predict Emotion Endpoint ('/predict')
 # A. Server UI at homepage ('/')
 @app.get('/', include_in_schema = False)
 def server_ui():
-    return FileResponse('static/index.html')
+    return FileResponse(BASE_DIR/'static/index.html')
 
 # B. health Check Endpoint ('/health')
 @app.get('/health', response_model=HealthResponse)
