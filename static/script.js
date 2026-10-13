@@ -1,357 +1,388 @@
-(() => {
-  'use strict';
+"use strict";
 
-  /* ---------- Data ---------- */
-  const NEUTRAL = { bg: '#E9ECF3', ink: '#1B1F2E' };
+/* ============================================================
+   Undertone — front-end for the FastAPI BiGRU emotion service
+   Endpoints used: GET /health, POST /predict
+   ============================================================ */
 
-  const EMOTIONS = {
-    sadness:  { emoji: '😢', bg: '#3F66C9', ink: '#F2F5FF', sample: 'I miss how things used to be' },
-    joy:      { emoji: '😄', bg: '#FFC83D', ink: '#2B1D00', sample: "I can't stop smiling, today was perfect" },
-    love:     { emoji: '❤️', bg: '#FF8DA6', ink: '#3B0A1C', sample: "I'd do anything for you" },
-    anger:    { emoji: '😠', bg: '#C93220', ink: '#FFF1EC', sample: 'How dare you go behind my back' },
-    fear:     { emoji: '😨', bg: '#5B3FB5', ink: '#F3EEFF', sample: 'I heard footsteps in the empty house' },
-    surprise: { emoji: '😲', bg: '#2FC7C0', ink: '#05302E', sample: 'I never expected that to happen' },
-  };
-  const FALLBACK = { emoji: '🤔', ...NEUTRAL };
+const EMOTIONS = {
+  sadness:  { emoji: "😢", color: "#5b8def", blurb: "Heavy, low-energy language." },
+  joy:      { emoji: "😄", color: "#ffc53d", blurb: "Bright, upbeat and open." },
+  love:     { emoji: "❤️", color: "#ff5c8a", blurb: "Warm, tender and affectionate." },
+  anger:    { emoji: "😠", color: "#ff5040", blurb: "Sharp, frustrated, charged." },
+  fear:     { emoji: "😨", color: "#9b6bff", blurb: "Tense, uneasy, on edge." },
+  surprise: { emoji: "😲", color: "#2fd3c4", blurb: "Sudden and unexpected." },
+};
 
-  const HISTORY_KEY = 'moodlens.history';
-  const HISTORY_MAX = 6;
+const SAMPLES = [
+  { e: "joy",      t: "I can't stop smiling, today turned out perfect" },
+  { e: "sadness",  t: "I miss her so much it physically hurts" },
+  { e: "anger",    t: "How dare you lie to my face again" },
+  { e: "fear",     t: "I'm terrified of what the doctor is going to say" },
+  { e: "surprise", t: "I never expected to win, I'm completely stunned" },
+  { e: "love",     t: "I adore the way you laugh at your own jokes" },
+];
 
-  /* ---------- Helpers ---------- */
-  const $ = (id) => document.getElementById(id);
-  const root = document.documentElement;
-  const themeMeta = document.querySelector('meta[name="theme-color"]');
-  const prefersReduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+const $ = (id) => document.getElementById(id);
+const el = {
+  form: $("form"), text: $("text"), go: $("go"), clear: $("clear"), count: $("count"),
+  error: $("error"), chips: $("chips"), panel: $("panel"),
+  result: $("result"), ring: $("ringFill"), emoji: $("emoji"),
+  name: $("emotionName"), blurb: $("emotionBlurb"), confNum: $("confNum"), confTag: $("confTag"),
+  bars: $("bars"), echo: $("echo"),
+  historyWrap: $("historyWrap"), history: $("history"), clearHistory: $("clearHistory"),
+  status: $("status"), statusText: $("statusText"),
+};
 
-  const h = (tag, props = {}, ...kids) => {
-    const el = document.createElement(tag);
-    for (const [k, v] of Object.entries(props)) {
-      if (k === 'class') el.className = v;
-      else if (k === 'text') el.textContent = v;
-      else el.setAttribute(k, v);
+const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const RING_C = 2 * Math.PI * 54;
+const HISTORY_KEY = "undertone.history.v1";
+const MAX_HISTORY = 6;
+
+let busy = false;
+let history = [];
+
+/* ---------------- Helpers ---------------- */
+const hexToRgb = (hex) => {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+};
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const pct = (v, d = 1) => (v * 100).toFixed(d);
+
+function safeStore(action, value) {
+  try {
+    if (action === "get") return JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(value));
+  } catch (_) { /* storage unavailable: history stays in memory */ }
+  return [];
+}
+
+/* ---------------- Accent colour (page + canvas) ---------------- */
+let targetRGB = hexToRgb("#7c8cff");
+let currentRGB = [...targetRGB];
+
+function setAccent(emotionKey) {
+  const color = (EMOTIONS[emotionKey] || {}).color || "#7c8cff";
+  document.documentElement.style.setProperty("--accent", color);
+  targetRGB = hexToRgb(color);
+}
+
+/* ---------------- Particle field ---------------- */
+const canvas = $("bg");
+const ctx = canvas.getContext("2d");
+let W = 0, H = 0, DPR = 1;
+const mouse = { x: -9999, y: -9999 };
+let particles = [];
+let bursts = [];
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const n = Math.round(Math.min(70, (W * H) / 20000));
+  particles = Array.from({ length: n }, () => ({
+    x: Math.random() * W, y: Math.random() * H,
+    vx: (Math.random() - 0.5) * 0.25, vy: (Math.random() - 0.5) * 0.25,
+    r: Math.random() * 1.4 + 0.5,
+  }));
+}
+
+function burst(x, y) {
+  if (reduceMotion) return;
+  for (let i = 0; i < 46; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const s = Math.random() * 5 + 1.5;
+    bursts.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 1, r: Math.random() * 2.2 + 0.8 });
+  }
+}
+
+function frame() {
+  for (let i = 0; i < 3; i++) currentRGB[i] += (targetRGB[i] - currentRGB[i]) * 0.04;
+  const [r, g, b] = currentRGB.map(Math.round);
+  ctx.clearRect(0, 0, W, H);
+
+  for (const p of particles) {
+    const dx = p.x - mouse.x, dy = p.y - mouse.y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < 22000) {
+      const f = (1 - d2 / 22000) * 0.5;
+      p.vx += (dx / Math.sqrt(d2 + 1)) * f * 0.2;
+      p.vy += (dy / Math.sqrt(d2 + 1)) * f * 0.2;
     }
-    el.append(...kids);
-    return el;
-  };
+    p.vx *= 0.985; p.vy *= 0.985;
+    p.x += p.vx + (Math.random() - 0.5) * 0.04; p.y += p.vy + (Math.random() - 0.5) * 0.04;
+    if (p.x < -10) p.x = W + 10; else if (p.x > W + 10) p.x = -10;
+    if (p.y < -10) p.y = H + 10; else if (p.y > H + 10) p.y = -10;
+  }
 
-  const centerOf = (el) => {
-    const r = el.getBoundingClientRect();
-    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-  };
-
-  const els = {
-    form: $('form'), text: $('text'), count: $('count'), hint: $('hint'),
-    btn: $('analyze'), btnLabel: $('btn-label'), chips: $('chips'), dial: $('dial'),
-    empty: $('p-empty'), loading: $('p-loading'), result: $('p-result'), error: $('p-error'),
-    slow: $('slow'), errMsg: $('err-msg'), retry: $('retry'), panel: $('panel'),
-    health: $('health'), healthLabel: $('health-label'),
-    history: $('history'), historyList: $('history-list'), clearHistory: $('clear-history'),
-  };
-
-  const panels = { empty: els.empty, loading: els.loading, result: els.result, error: els.error };
-  const showPanel = (name) => {
-    for (const [key, el] of Object.entries(panels)) el.hidden = key !== name;
-  };
-
-  /* ---------- Colour wipe ---------- */
-  let target = NEUTRAL;
-  let active = null;
-
-  const applyTheme = (t) => {
-    root.style.setProperty('--bg', t.bg);
-    root.style.setProperty('--ink', t.ink);
-    if (themeMeta) themeMeta.content = t.bg;
-  };
-
-  const settle = () => {
-    if (!active) return;
-    const a = active;
-    active = null;
-    clearTimeout(a.timer);
-    a.anim.cancel();
-    a.el.remove();
-    applyTheme(a.theme);
-  };
-
-  const flood = (theme, x, y) => {
-    settle();
-    if (theme.bg === target.bg) return;
-    target = theme;
-
-    if (prefersReduced()) { applyTheme(theme); return; }
-
-    const el = h('div', { class: 'flood', 'aria-hidden': 'true' });
-    el.style.background = theme.bg;
-    document.body.prepend(el);
-
-    const r = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y));
-    const anim = el.animate(
-      [
-        { clipPath: `circle(0px at ${x}px ${y}px)` },
-        { clipPath: `circle(${r}px at ${x}px ${y}px)` },
-      ],
-      { duration: 950, easing: 'cubic-bezier(.65, 0, .2, 1)', fill: 'forwards' }
-    );
-    const timer = setTimeout(() => root.style.setProperty('--ink', theme.ink), 380);
-    active = { el, anim, timer, theme };
-
-    anim.finished
-      .then(() => {
-        if (active && active.el === el) {
-          const t = active.theme;
-          active = null;
-          applyTheme(t);
-          el.remove();
-        }
-      })
-      .catch(() => {});
-  };
-
-  /* ---------- Rendering a result ---------- */
-  const countUp = (el, to, delay = 450, duration = 1000) => {
-    if (prefersReduced()) { el.textContent = to.toFixed(1); return; }
-    const start = performance.now() + delay;
-    const tick = (now) => {
-      const t = Math.min(Math.max((now - start) / duration, 0), 1);
-      el.textContent = (to * (1 - Math.pow(1 - t, 3))).toFixed(1);
-      if (t < 1) requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-  };
-
-  const buildResult = (data) => {
-    const key = data.predicted_emotion;
-    const meta = EMOTIONS[key] || FALLBACK;
-    const pct = data.confidence * 100;
-    const entries = Object.entries(data.all_probabilities);
-    const sorted = [...entries].sort((a, b) => b[1] - a[1]);
-
-    const name = h('h2', { class: 'emotion-name', 'aria-label': key });
-    [...key].forEach((ch, i) => {
-      const s = h('span', { class: 'letter', 'aria-hidden': 'true', text: ch });
-      s.style.setProperty('--i', i);
-      name.append(s);
-    });
-
-    const pctEl = h('span', { text: '0.0' });
-    const confidence = h('p', { class: 'confidence' }, h('strong', {}, pctEl, '%'), ' confident');
-
-    const bars = h('ul', { class: 'bars' });
-    entries.forEach(([label, p], i) => {
-      const li = h('li', { class: 'bar' + (label === key ? ' top' : '') });
-      li.style.setProperty('--i', i);
-      const fill = h('span', { class: 'fill' });
-      fill.style.setProperty('--w', Math.max(p, 0));
-      li.append(
-        h('span', { 'aria-hidden': 'true', text: (EMOTIONS[label] || FALLBACK).emoji }),
-        h('span', { text: label }),
-        h('span', { class: 'track' }, fill),
-        h('span', { class: 'val', text: (p * 100).toFixed(1) + '%' })
-      );
-      bars.append(li);
-    });
-
-    const nodes = [
-      h('div', { class: 'emoji-big', 'aria-hidden': 'true', text: meta.emoji }),
-      name,
-      confidence,
-    ];
-    if (pct < 50 && sorted[1]) {
-      nodes.push(h('p', {
-        class: 'hedge',
-        text: `Mixed signals. Closest alternative: ${sorted[1][0]} (${(sorted[1][1] * 100).toFixed(1)}%).`,
-      }));
+  ctx.lineWidth = 1;
+  for (let i = 0; i < particles.length; i++) {
+    const a = particles[i];
+    for (let j = i + 1; j < particles.length; j++) {
+      const c = particles[j];
+      const dx = a.x - c.x, dy = a.y - c.y, d2 = dx * dx + dy * dy;
+      if (d2 < 13000) {
+        ctx.strokeStyle = `rgba(${r},${g},${b},${(1 - d2 / 13000) * 0.16})`;
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(c.x, c.y); ctx.stroke();
+      }
     }
-    nodes.push(h('p', { class: 'echo', text: `\u201C${data.text}\u201D` }), bars);
+    ctx.fillStyle = `rgba(${r},${g},${b},0.55)`;
+    ctx.beginPath(); ctx.arc(a.x, a.y, a.r, 0, Math.PI * 2); ctx.fill();
+  }
 
-    els.result.replaceChildren(...nodes);
-    countUp(pctEl, pct);
-  };
+  for (let i = bursts.length - 1; i >= 0; i--) {
+    const p = bursts[i];
+    p.x += p.vx; p.y += p.vy; p.vx *= 0.94; p.vy *= 0.94; p.life -= 0.018;
+    if (p.life <= 0) { bursts.splice(i, 1); continue; }
+    ctx.fillStyle = `rgba(${r},${g},${b},${p.life * 0.9})`;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.r * p.life + 0.3, 0, Math.PI * 2); ctx.fill();
+  }
+  requestAnimationFrame(frame);
+}
 
-  const show = (data, origin) => {
-    const meta = EMOTIONS[data.predicted_emotion] || FALLBACK;
-    buildResult(data);
-    showPanel('result');
-    flood({ bg: meta.bg, ink: meta.ink }, origin.x, origin.y);
-  };
+window.addEventListener("resize", resize);
+window.addEventListener("pointermove", (e) => { mouse.x = e.clientX; mouse.y = e.clientY; }, { passive: true });
+window.addEventListener("pointerleave", () => { mouse.x = mouse.y = -9999; });
+resize();
+requestAnimationFrame(frame);
 
-  const showError = (message) => {
-    els.errMsg.textContent = message;
-    showPanel('error');
-  };
+/* ---------------- Panel spotlight ---------------- */
+el.panel.addEventListener("pointermove", (e) => {
+  const rect = el.panel.getBoundingClientRect();
+  el.panel.style.setProperty("--mx", `${e.clientX - rect.left}px`);
+  el.panel.style.setProperty("--my", `${e.clientY - rect.top}px`);
+});
 
-  /* ---------- API ---------- */
-  let busy = false;
-  let lastText = '';
+/* ---------------- Health pill ---------------- */
+async function checkHealth() {
+  try {
+    const res = await fetch("/health", { cache: "no-store" });
+    if (!res.ok) throw new Error(res.status);
+    const data = await res.json();
+    if (data.model_loaded) setStatus("online", "Model online");
+    else setStatus("warming", "Model warming up");
+  } catch (_) {
+    setStatus("offline", "Server unreachable");
+  }
+}
+function setStatus(state, text) {
+  el.status.dataset.state = state;
+  el.statusText.textContent = text;
+}
+checkHealth();
+setInterval(checkHealth, 30000);
 
-  const setBusy = (on) => {
-    busy = on;
-    els.btn.dataset.loading = String(on);
-    els.btnLabel.textContent = on ? 'Reading' : 'Analyze';
-    els.btn.disabled = on || !els.text.value.trim();
-    els.panel.setAttribute('aria-busy', String(on));
-  };
+/* ---------------- Input handling ---------------- */
+function syncInput() {
+  const len = el.text.value.length;
+  el.count.textContent = len;
+  const has = el.text.value.trim().length > 0;
+  el.go.disabled = !has || busy;
+  el.clear.hidden = len === 0;
+}
+el.text.addEventListener("input", syncInput);
+el.text.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); el.form.requestSubmit(); }
+});
+el.clear.addEventListener("click", () => { el.text.value = ""; syncInput(); hideError(); el.text.focus(); });
 
-  const messageFor = (err) => {
-    if (err.name === 'AbortError') return 'The server took too long to answer. Try again in a moment.';
-    if (err.status === 503) return 'The model is still loading. Wait a few seconds and try again.';
-    if (err.status === 422) return 'Enter between 1 and 2,000 characters.';
-    if (err instanceof TypeError) return "Can't reach the server. Check that it is running, then try again.";
-    return 'The server hit an error while reading that sentence. Try again.';
-  };
+el.form.addEventListener("submit", (e) => { e.preventDefault(); analyze(); });
 
-  const analyze = async (raw, origin) => {
-    const text = raw.trim();
-    if (!text || busy) return;
+function showError(msg) {
+  el.error.hidden = false;
+  el.error.style.animation = "none"; void el.error.offsetWidth; el.error.style.animation = "";
+  el.error.textContent = msg;
+}
+function hideError() { el.error.hidden = true; }
 
-    lastText = text;
-    if (!/[a-z0-9]/i.test(text)) {
-      showError('Add some words. Punctuation and symbols on their own can\u2019t be scored.');
-      return;
+/* Sample chips: type the sentence in, then analyze */
+SAMPLES.forEach((s) => {
+  const b = document.createElement("button");
+  b.type = "button"; b.className = "chip";
+  b.style.setProperty("--c", EMOTIONS[s.e].color);
+  const icon = document.createElement("span"); icon.textContent = EMOTIONS[s.e].emoji;
+  const label = document.createElement("i"); label.style.fontStyle = "normal"; label.textContent = s.e;
+  b.append(icon, label);
+  b.addEventListener("click", () => typeIn(s.t));
+  el.chips.appendChild(b);
+});
+
+let typing = null;
+async function typeIn(text) {
+  if (busy) return;
+  const token = (typing = Symbol());
+  hideError();
+  el.text.value = "";
+  if (reduceMotion) {
+    el.text.value = text; syncInput();
+  } else {
+    for (let i = 1; i <= text.length; i++) {
+      if (typing !== token) return;
+      el.text.value = text.slice(0, i); syncInput();
+      await sleep(14);
     }
+  }
+  if (typing === token) analyze();
+}
+el.text.addEventListener("input", () => { typing = null; });
 
-    setBusy(true);
-    els.slow.hidden = true;
-    showPanel('loading');
-    const slowTimer = setTimeout(() => { els.slow.hidden = false; }, 5000);
-    const ctrl = new AbortController();
-    const abortTimer = setTimeout(() => ctrl.abort(), 90000);
+/* ---------------- Analyze ---------------- */
+async function analyze() {
+  const text = el.text.value.trim();
+  if (!text || busy) return;
+  busy = true; hideError();
+  el.go.classList.add("loading"); el.go.disabled = true;
+  el.emoji.classList.remove("idle");
 
-    try {
-      const res = await fetch('/predict', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+  try {
+    const [res] = await Promise.all([
+      fetch("/predict", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
-        signal: ctrl.signal,
-      });
-      if (!res.ok) {
-        const err = new Error('Request failed');
-        err.status = res.status;
-        throw err;
-      }
-      const data = await res.json();
-      remember(data);
-      show(data, origin);
-    } catch (err) {
-      showError(messageFor(err));
-    } finally {
-      clearTimeout(slowTimer);
-      clearTimeout(abortTimer);
-      setBusy(false);
+      }),
+      sleep(650), // keeps the loading state readable instead of flashing
+    ]);
+
+    if (!res.ok) {
+      let detail = `Request failed (${res.status}).`;
+      try {
+        const body = await res.json();
+        if (typeof body.detail === "string") detail = body.detail;
+        else if (res.status === 422) detail = "That text couldn't be processed. Check its length (1–2000 characters).";
+      } catch (_) {}
+      throw new Error(detail);
     }
+    const data = await res.json();
+    render(data);
+    pushHistory(data);
+    setStatus("online", "Model online");
+  } catch (err) {
+    const offline = err instanceof TypeError;
+    showError(offline ? "Can't reach the server. Check your connection and try again." : err.message);
+    if (offline) setStatus("offline", "Server unreachable");
+  } finally {
+    busy = false;
+    el.go.classList.remove("loading");
+    syncInput();
+  }
+}
+
+/* ---------------- Render result ---------------- */
+function confidenceLabel(c) {
+  if (c >= 0.8) return "High confidence";
+  if (c >= 0.55) return "Moderate confidence";
+  return "Mixed signals";
+}
+
+function countUp(node, to, duration = 1100) {
+  if (reduceMotion) { node.textContent = to.toFixed(1); return; }
+  const start = performance.now();
+  const tick = (now) => {
+    const t = Math.min((now - start) / duration, 1);
+    const eased = 1 - Math.pow(1 - t, 4);
+    node.textContent = (to * eased).toFixed(1);
+    if (t < 1) requestAnimationFrame(tick);
   };
+  requestAnimationFrame(tick);
+}
 
-  /* ---------- History ---------- */
-  let history = [];
+function render(data) {
+  const key = data.predicted_emotion;
+  const meta = EMOTIONS[key] || { emoji: "🙂", color: "#7c8cff", blurb: "" };
 
-  const saveHistory = () => {
-    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(history)); } catch { /* storage unavailable */ }
-  };
+  setAccent(key);
 
-  const loadHistory = () => {
-    try {
-      const raw = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
-      if (Array.isArray(raw)) history = raw.slice(0, HISTORY_MAX);
-    } catch { history = []; }
-  };
+  el.name.textContent = key;
+  el.blurb.textContent = meta.blurb;
+  el.emoji.textContent = meta.emoji;
+  el.confTag.textContent = confidenceLabel(data.confidence);
+  el.echo.textContent = `“${data.text}”`;
 
-  const renderHistory = () => {
-    els.history.hidden = history.length === 0;
-    els.historyList.replaceChildren(
-      ...history.map((item) => {
-        const btn = h(
-          'button',
-          { type: 'button', class: 'chip', title: item.text },
-          h('span', { 'aria-hidden': 'true', text: (EMOTIONS[item.predicted_emotion] || FALLBACK).emoji }),
-          h('span', { text: item.text })
-        );
-        btn.addEventListener('click', () => {
-          els.text.value = item.text;
-          updateInput();
-          show(item, centerOf(btn));
-        });
-        return h('li', {}, btn);
-      })
-    );
-  };
+  // bars: sorted high -> low
+  el.bars.textContent = "";
+  Object.entries(data.all_probabilities)
+    .sort((a, b) => b[1] - a[1])
+    .forEach(([label, p], i) => {
+      const m = EMOTIONS[label] || { emoji: "•", color: "#888" };
+      const li = document.createElement("li");
+      li.className = "bar-row" + (label === key ? " top" : "");
+      li.style.setProperty("--i", i); li.style.setProperty("--c", m.color);
 
-  const remember = (data) => {
-    history = [data, ...history.filter((x) => x.text !== data.text)].slice(0, HISTORY_MAX);
-    saveHistory();
-    renderHistory();
-  };
+      const name = document.createElement("span"); name.className = "bar-name";
+      const ic = document.createElement("span"); ic.textContent = m.emoji;
+      name.append(ic, document.createTextNode(label));
 
-  /* ---------- Input ---------- */
-  const updateInput = () => {
-    const len = els.text.value.length;
-    els.count.textContent = `${len} / 2000`;
-    els.btn.disabled = busy || !els.text.value.trim();
-  };
+      const track = document.createElement("div"); track.className = "bar-track";
+      const fill = document.createElement("div"); fill.className = "bar-fill";
+      track.appendChild(fill);
 
-  els.text.addEventListener('input', updateInput);
-
-  els.text.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-      e.preventDefault();
-      analyze(els.text.value, centerOf(els.btn));
-    }
-  });
-
-  els.form.addEventListener('submit', (e) => {
-    e.preventDefault();
-    analyze(els.text.value, centerOf(els.btn));
-  });
-
-  els.retry.addEventListener('click', () => analyze(lastText, centerOf(els.retry)));
-
-  els.clearHistory.addEventListener('click', () => {
-    history = [];
-    saveHistory();
-    renderHistory();
-  });
-
-  /* ---------- Static pieces built from the data ---------- */
-  Object.entries(EMOTIONS).forEach(([label, meta], i) => {
-    const li = h('li', {}, h('span', { class: 'e', 'aria-hidden': 'true', text: meta.emoji }), h('span', { text: label }));
-    li.firstChild.style.setProperty('--i', i);
-    els.dial.append(li);
-
-    const chip = h('button', { type: 'button', class: 'chip', text: meta.sample });
-    chip.addEventListener('click', () => {
-      els.text.value = meta.sample;
-      updateInput();
-      analyze(meta.sample, centerOf(chip));
+      const val = document.createElement("span"); val.className = "bar-pct"; val.textContent = `${pct(p)}%`;
+      li.append(name, track, val);
+      el.bars.appendChild(li);
+      fill.dataset.w = Math.max(p * 100, 0.6);
     });
-    els.chips.append(h('li', {}, chip));
-  });
 
-  els.hint.textContent = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
-    ? '\u2318 Enter to analyze'
-    : 'Ctrl Enter to analyze';
+  // reset + replay entrance
+  el.ring.style.transition = "none";
+  el.ring.style.strokeDashoffset = RING_C;
+  el.confNum.textContent = "0.0";
+  el.result.hidden = false;
+  el.result.classList.remove("play"); void el.result.offsetWidth; el.result.classList.add("play");
 
-  /* ---------- Server status ---------- */
-  const setHealth = (state, label) => {
-    els.health.dataset.state = state;
-    els.healthLabel.textContent = label;
-  };
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    el.ring.style.transition = "";
+    el.ring.style.strokeDashoffset = RING_C * (1 - data.confidence);
+    el.bars.querySelectorAll(".bar-fill").forEach((f) => { f.style.width = `${f.dataset.w}%`; });
+    countUp(el.confNum, data.confidence * 100);
+  }));
 
-  const pollHealth = async (attempt = 0) => {
-    try {
-      const res = await fetch('/health', { cache: 'no-store' });
-      if (res.ok) {
-        const info = await res.json();
-        if (info.model_loaded) { setHealth('ready', 'Model ready'); return; }
-      }
-    } catch { /* server not reachable yet */ }
+  setTimeout(() => el.emoji.classList.add("idle"), 1100);
 
-    if (attempt >= 40) { setHealth('down', 'Server not responding'); return; }
-    setHealth('pending', 'Waking the model');
-    setTimeout(() => pollHealth(attempt + 1), 3000);
-  };
+  // celebratory burst from the emoji
+  setTimeout(() => {
+    const r = el.emoji.getBoundingClientRect();
+    burst(r.left + r.width / 2, r.top + r.height / 2);
+  }, 250);
 
-  /* ---------- Start ---------- */
-  loadHistory();
+  if (window.innerWidth < 720 || el.result.getBoundingClientRect().bottom > window.innerHeight) {
+    el.result.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "nearest" });
+  }
+}
+
+/* ---------------- History ---------------- */
+function pushHistory(data) {
+  history = history.filter((h) => h.text !== data.text);
+  history.unshift({ text: data.text, emotion: data.predicted_emotion, confidence: data.confidence, probs: data.all_probabilities });
+  history = history.slice(0, MAX_HISTORY);
+  safeStore("set", history);
   renderHistory();
-  updateInput();
-  pollHealth();
-})();
+}
+
+function renderHistory() {
+  el.history.textContent = "";
+  el.historyWrap.hidden = history.length === 0;
+  history.forEach((h, i) => {
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.type = "button"; btn.className = "history-item"; btn.style.animationDelay = `${i * 50}ms`;
+    const e = document.createElement("span"); e.textContent = (EMOTIONS[h.emotion] || {}).emoji || "•";
+    const t = document.createElement("span"); t.className = "h-text"; t.textContent = h.text;
+    const c = document.createElement("span"); c.className = "h-conf"; c.textContent = `${pct(h.confidence, 0)}%`;
+    btn.append(e, t, c);
+    btn.addEventListener("click", () => {
+      el.text.value = h.text; syncInput();
+      render({ text: h.text, predicted_emotion: h.emotion, confidence: h.confidence, all_probabilities: h.probs });
+    });
+    li.appendChild(btn);
+    el.history.appendChild(li);
+  });
+}
+
+el.clearHistory.addEventListener("click", () => { history = []; safeStore("set", history); renderHistory(); });
+
+history = (safeStore("get") || []).filter((h) => h && h.text && h.probs).slice(0, MAX_HISTORY);
+renderHistory();
+syncInput();
